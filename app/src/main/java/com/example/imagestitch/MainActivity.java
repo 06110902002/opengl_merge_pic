@@ -7,12 +7,12 @@ import android.graphics.BitmapFactory;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.widget.Toast;
-import java.io.InputStream;
 
 public class MainActivity extends Activity {
 
     private GLSurfaceView glSurfaceView;
     private MyGLRenderer renderer;
+    private Bitmap[] loadedBitmaps; // 保存加载的图片
 
     static {
         System.loadLibrary("texture-stitch");
@@ -45,22 +45,23 @@ public class MainActivity extends Activity {
                     R.drawable.image4
             };
 
-            Bitmap[] bitmaps = new Bitmap[imageResources.length];
+            loadedBitmaps = new Bitmap[imageResources.length];
 
             for (int i = 0; i < imageResources.length; i++) {
                 Bitmap originalBitmap = BitmapFactory.decodeResource(getResources(), imageResources[i]);
                 if (originalBitmap != null) {
                     // 确保使用ARGB_8888格式
                     if (originalBitmap.getConfig() != Bitmap.Config.ARGB_8888) {
-                        bitmaps[i] = originalBitmap.copy(Bitmap.Config.ARGB_8888, false);
+                        loadedBitmaps[i] = originalBitmap.copy(Bitmap.Config.ARGB_8888, false);
                         originalBitmap.recycle();
                     } else {
-                        bitmaps[i] = originalBitmap;
+                        loadedBitmaps[i] = originalBitmap;
                     }
                 }
             }
 
-            renderer.setImages(bitmaps);
+            // 设置图片到渲染器
+            renderer.setImages(loadedBitmaps);
             Toast.makeText(this, "加载了4张图片", Toast.LENGTH_SHORT).show();
 
         } catch (Exception e) {
@@ -74,11 +75,20 @@ public class MainActivity extends Activity {
         return getAssets();
     }
 
+    // 提供重新设置图片的方法
+    public void reloadImages() {
+        if (loadedBitmaps != null) {
+            renderer.setImages(loadedBitmaps);
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         if (glSurfaceView != null) {
             glSurfaceView.onResume();
+            // 回到前台时重新设置图片
+            reloadImages();
         }
     }
 
@@ -89,11 +99,25 @@ public class MainActivity extends Activity {
             glSurfaceView.onPause();
         }
     }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // 释放Bitmap资源
+        if (loadedBitmaps != null) {
+            for (Bitmap bitmap : loadedBitmaps) {
+                if (bitmap != null && !bitmap.isRecycled()) {
+                    bitmap.recycle();
+                }
+            }
+        }
+    }
 }
 
 class MyGLRenderer implements GLSurfaceView.Renderer {
     private Bitmap[] pendingBitmaps;
     private MainActivity activity;
+    private boolean needResetImages = false; // 标记是否需要重新设置图片
 
     public MyGLRenderer(MainActivity activity) {
         this.activity = activity;
@@ -103,6 +127,7 @@ class MyGLRenderer implements GLSurfaceView.Renderer {
     public native void nativeSurfaceChanged(int width, int height);
     public native void nativeDrawFrame();
     public native void nativeSetImages(Bitmap[] bitmaps, int count);
+    public native void nativeCleanup(); // 新增清理方法
 
     @Override
     public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
@@ -112,9 +137,14 @@ class MyGLRenderer implements GLSurfaceView.Renderer {
             nativeSurfaceCreated(activity.getAppAssetManager());
         }
 
+        // 如果有待处理的图片，设置它们
         if (pendingBitmaps != null) {
             nativeSetImages(pendingBitmaps, pendingBitmaps.length);
             pendingBitmaps = null;
+        } else if (needResetImages) {
+            // 如果需要重新设置图片，通知activity重新加载
+            activity.reloadImages();
+            needResetImages = false;
         }
     }
 
@@ -131,5 +161,11 @@ class MyGLRenderer implements GLSurfaceView.Renderer {
 
     public void setImages(Bitmap[] bitmaps) {
         this.pendingBitmaps = bitmaps;
+        this.needResetImages = false; // 重置标记
+    }
+
+    // 标记需要重新设置图片
+    public void markNeedResetImages() {
+        this.needResetImages = true;
     }
 }

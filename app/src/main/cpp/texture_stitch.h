@@ -34,6 +34,7 @@ public:
     bool addImage(void* pixels, int width, int height);
     void render();
     void cleanup();
+    void clearTextures(); // 新增：清空纹理方法
 
 private:
     std::string loadShaderFromAssets(AAssetManager* assetManager, const char* shaderPath);
@@ -77,6 +78,9 @@ Java_com_example_imagestitch_MyGLRenderer_nativeDrawFrame(JNIEnv *env, jobject t
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeSetImages(JNIEnv *env, jobject thiz,
                                                           jobjectArray bitmaps, jint count);
+
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeCleanup(JNIEnv *env, jobject thiz);
 
 #ifdef __cplusplus
 }
