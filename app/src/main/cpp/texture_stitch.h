@@ -24,6 +24,15 @@ struct Vertex {
     float texCoord[2];
 };
 
+// 变换控制结构体
+struct Transform {
+    float scale;        // 缩放因子
+    float translateX;   // X轴平移
+    float translateY;   // Y轴平移
+    float minScale;     // 最小缩放限制
+    float maxScale;     // 最大缩放限制
+};
+
 class TextureStitcher {
 public:
     TextureStitcher();
@@ -34,7 +43,12 @@ public:
     bool addImage(void* pixels, int width, int height);
     void render();
     void cleanup();
-    void clearTextures(); // 新增：清空纹理方法
+    void clearTextures();
+
+    // 新增手势控制方法
+    void handleScale(float scaleFactor, float focusX, float focusY);
+    void handleDrag(float dx, float dy);
+    void resetTransform();
 
 private:
     std::string loadShaderFromAssets(AAssetManager* assetManager, const char* shaderPath);
@@ -42,7 +56,9 @@ private:
     GLuint createProgram(const char* vertexSource, const char* fragmentSource);
     void calculateLayout();
     void createVertexData();
+    void updateVerticesWithTransform(); // 更新顶点数据应用变换
     void checkGLError(const char* operation);
+    void applyTransformToVertex(Vertex& vertex); // 对单个顶点应用变换
 
     GLuint mProgram;
     GLuint mVAO;
@@ -53,11 +69,15 @@ private:
     int mViewportHeight;
 
     std::vector<TextureInfo> mTextures;
-    std::vector<Vertex> mVertices;
+    std::vector<Vertex> mVertices;      // 原始顶点数据
+    std::vector<Vertex> mTransformedVertices; // 变换后的顶点数据
     std::vector<GLuint> mIndices;
 
     bool mInitialized;
     AAssetManager* mAssetManager;
+
+    // 变换控制
+    Transform mTransform;
 };
 
 #ifdef __cplusplus
@@ -81,6 +101,18 @@ Java_com_example_imagestitch_MyGLRenderer_nativeSetImages(JNIEnv *env, jobject t
 
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeCleanup(JNIEnv *env, jobject thiz);
+
+// 新增手势控制JNI方法
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeHandleScale(JNIEnv *env, jobject thiz,
+                                                            jfloat scaleFactor, jfloat focusX, jfloat focusY);
+
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeHandleDrag(JNIEnv *env, jobject thiz,
+                                                           jfloat dx, jfloat dy);
+
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeResetTransform(JNIEnv *env, jobject thiz);
 
 #ifdef __cplusplus
 }

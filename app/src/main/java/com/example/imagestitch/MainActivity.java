@@ -6,13 +6,19 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.widget.Toast;
 
 public class MainActivity extends Activity {
 
     private GLSurfaceView glSurfaceView;
     private MyGLRenderer renderer;
-    private Bitmap[] loadedBitmaps; // 保存加载的图片
+    private Bitmap[] loadedBitmaps;
+
+    // 手势检测器
+    private ScaleGestureDetector scaleGestureDetector;
+    private float lastTouchX, lastTouchY;
 
     static {
         System.loadLibrary("texture-stitch");
@@ -31,8 +37,65 @@ public class MainActivity extends Activity {
 
         setContentView(glSurfaceView);
 
+        // 初始化手势检测器
+        initGestureDetector();
+
         // 加载图片
         loadImages();
+    }
+
+    private void initGestureDetector() {
+        // 创建缩放手势检测器
+        scaleGestureDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override
+            public boolean onScale(ScaleGestureDetector detector) {
+                // 获取缩放因子
+                float scaleFactor = detector.getScaleFactor();
+                // 传递给native层
+                renderer.handleScale(scaleFactor, detector.getFocusX(), detector.getFocusY());
+                return true;
+            }
+        });
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        // 将触摸事件传递给缩放手势检测器
+        scaleGestureDetector.onTouchEvent(event);
+
+        final int action = event.getAction();
+
+        switch (action & MotionEvent.ACTION_MASK) {
+            case MotionEvent.ACTION_DOWN:
+                // 记录触摸起始位置
+                lastTouchX = event.getX();
+                lastTouchY = event.getY();
+                break;
+
+            case MotionEvent.ACTION_MOVE:
+                if (!scaleGestureDetector.isInProgress()) {
+                    // 计算移动距离
+                    final float x = event.getX();
+                    final float y = event.getY();
+                    final float dx = x - lastTouchX;
+                    final float dy = y - lastTouchY;
+
+                    // 传递给native层处理拖动
+                    renderer.handleDrag(dx, dy);
+
+                    // 更新最后触摸位置
+                    lastTouchX = x;
+                    lastTouchY = y;
+                }
+                break;
+
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                // 触摸结束，可以在这里添加惯性滚动等效果
+                break;
+        }
+
+        return true;
     }
 
     private void loadImages() {
@@ -62,7 +125,7 @@ public class MainActivity extends Activity {
 
             // 设置图片到渲染器
             renderer.setImages(loadedBitmaps);
-            Toast.makeText(this, "加载了4张图片", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "加载了4张图片，支持双指缩放和拖动", Toast.LENGTH_SHORT).show();
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -117,32 +180,35 @@ public class MainActivity extends Activity {
 class MyGLRenderer implements GLSurfaceView.Renderer {
     private Bitmap[] pendingBitmaps;
     private MainActivity activity;
-    private boolean needResetImages = false; // 标记是否需要重新设置图片
+    private boolean needResetImages = false;
 
     public MyGLRenderer(MainActivity activity) {
         this.activity = activity;
     }
 
+    // 原有的Native方法
     public native void nativeSurfaceCreated(AssetManager assetManager);
     public native void nativeSurfaceChanged(int width, int height);
     public native void nativeDrawFrame();
     public native void nativeSetImages(Bitmap[] bitmaps, int count);
-    public native void nativeCleanup(); // 新增清理方法
+    public native void nativeCleanup();
+
+    // 新增的手势控制Native方法
+    public native void nativeHandleScale(float scaleFactor, float focusX, float focusY);
+    public native void nativeHandleDrag(float dx, float dy);
+    public native void nativeResetTransform(); // 重置变换
 
     @Override
     public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
                                  javax.microedition.khronos.egl.EGLConfig config) {
-        // 通过Activity引用安全地获取AssetManager
         if (activity != null) {
             nativeSurfaceCreated(activity.getAppAssetManager());
         }
 
-        // 如果有待处理的图片，设置它们
         if (pendingBitmaps != null) {
             nativeSetImages(pendingBitmaps, pendingBitmaps.length);
             pendingBitmaps = null;
         } else if (needResetImages) {
-            // 如果需要重新设置图片，通知activity重新加载
             activity.reloadImages();
             needResetImages = false;
         }
@@ -161,11 +227,25 @@ class MyGLRenderer implements GLSurfaceView.Renderer {
 
     public void setImages(Bitmap[] bitmaps) {
         this.pendingBitmaps = bitmaps;
-        this.needResetImages = false; // 重置标记
+        this.needResetImages = false;
     }
 
-    // 标记需要重新设置图片
     public void markNeedResetImages() {
         this.needResetImages = true;
+    }
+
+    // 处理缩放手势
+    public void handleScale(float scaleFactor, float focusX, float focusY) {
+        nativeHandleScale(scaleFactor, focusX, focusY);
+    }
+
+    // 处理拖动手势
+    public void handleDrag(float dx, float dy) {
+        nativeHandleDrag(dx, dy);
+    }
+
+    // 重置变换（可选功能）
+    public void resetTransform() {
+        nativeResetTransform();
     }
 }

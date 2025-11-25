@@ -9,11 +9,18 @@ static TextureStitcher* gStitcher = nullptr;
 
 // TextureStitcher类的构造函数
 TextureStitcher::TextureStitcher()
-    : mProgram(0), mVAO(0), mVBO(0), mEBO(0),
-      mViewportWidth(0), mViewportHeight(0),
-      mInitialized(false), mAssetManager(nullptr) {
+        : mProgram(0), mVAO(0), mVBO(0), mEBO(0),
+          mViewportWidth(0), mViewportHeight(0),
+          mInitialized(false), mAssetManager(nullptr) {
     // 输出构造函数调用日志
     LOGI("TextureStitcher constructor called");
+
+    // 初始化变换参数
+    mTransform.scale = 1.0f;        // 初始缩放为1（不缩放）
+    mTransform.translateX = 0.0f;   // 初始X平移为0
+    mTransform.translateY = 0.0f;   // 初始Y平移为0
+    mTransform.minScale = 0.5f;     // 最小缩放0.5倍
+    mTransform.maxScale = 3.0f;     // 最大缩放3倍
 }
 
 // TextureStitcher类的析构函数
@@ -75,38 +82,55 @@ std::string TextureStitcher::loadShaderFromAssets(AAssetManager* assetManager, c
 
 // 初始化TextureStitcher的函数
 bool TextureStitcher::initialize(AAssetManager* assetManager) {
+    // 输出初始化开始日志
     LOGI("initialize called");
-
-    // 如果已经初始化，先清理再重新初始化
+    // 检查是否已经初始化过
     if (mInitialized) {
-        LOGI("Already initialized, cleaning up first");
-        cleanup();
+        // 如果已初始化，直接返回true
+        LOGI("Already initialized");
+        return true;
     }
 
+    // 保存AssetManager指针供后续使用
     mAssetManager = assetManager;
+    // 输出AssetManager设置成功日志
     LOGI("AssetManager set");
 
+    // 从assets加载顶点着色器代码
     std::string vertexShaderCode = loadShaderFromAssets(assetManager, "shaders/vertex_shader.glsl");
+    // 从assets加载片段着色器代码
     std::string fragmentShaderCode = loadShaderFromAssets(assetManager, "shaders/fragment_shader.glsl");
 
+    // 输出创建shader程序的日志
     LOGI("Creating shader program");
+    // 创建着色器程序
     mProgram = createProgram(vertexShaderCode.c_str(), fragmentShaderCode.c_str());
+    // 检查着色器程序是否创建成功
     if (mProgram == 0) {
+        // 输出创建失败日志
         LOGE("Failed to create shader program");
         return false;
     }
+    // 输出着色器程序创建成功日志，包含程序ID
     LOGI("Shader program created: %d", mProgram);
 
-    // 重新生成OpenGL对象
+    // 生成顶点数组对象(VAO)
     glGenVertexArrays(1, &mVAO);
+    // 生成顶点缓冲对象(VBO)
     glGenBuffers(1, &mVBO);
+    // 生成元素缓冲对象(EBO)
     glGenBuffers(1, &mEBO);
-    LOGI("OpenGL objects regenerated: VAO=%d, VBO=%d, EBO=%d", mVAO, mVBO, mEBO);
+    // 输出生成的OpenGL对象ID
+    LOGI("OpenGL objects generated: VAO=%d, VBO=%d, EBO=%d", mVAO, mVBO, mEBO);
 
+    // 检查初始化过程中的OpenGL错误
     checkGLError("initialize");
 
+    // 设置初始化标志为true
     mInitialized = true;
-    LOGI("TextureStitcher reinitialized successfully");
+    // 输出初始化成功日志
+    LOGI("TextureStitcher initialized successfully");
+    // 返回初始化成功
     return true;
 }
 
@@ -173,6 +197,106 @@ bool TextureStitcher::addImage(void* pixels, int width, int height) {
     return true;
 }
 
+// 对单个顶点应用变换的函数
+void TextureStitcher::applyTransformToVertex(Vertex& vertex) {
+    // 先缩放，后平移的变换顺序
+    vertex.position[0] = vertex.position[0] * mTransform.scale + mTransform.translateX;
+    vertex.position[1] = vertex.position[1] * mTransform.scale + mTransform.translateY;
+    // Z坐标保持不变
+    vertex.position[2] = vertex.position[2];
+}
+
+// 更新顶点数据应用当前变换的函数
+void TextureStitcher::updateVerticesWithTransform() {
+    // 清空变换后的顶点数据
+    mTransformedVertices.clear();
+
+    // 对每个原始顶点应用变换
+    for (const auto& originalVertex : mVertices) {
+        Vertex transformedVertex = originalVertex;
+        applyTransformToVertex(transformedVertex);
+        mTransformedVertices.push_back(transformedVertex);
+    }
+}
+
+// 处理缩放手势的函数
+void TextureStitcher::handleScale(float scaleFactor, float focusX, float focusY) {
+    // 输出缩放信息日志
+    LOGI("handleScale: factor=%.2f, focus=(%.1f, %.1f)", scaleFactor, focusX, focusY);
+
+    // 计算新的缩放值
+    float newScale = mTransform.scale * scaleFactor;
+
+    // 限制缩放范围
+    if (newScale < mTransform.minScale) {
+        newScale = mTransform.minScale;
+    } else if (newScale > mTransform.maxScale) {
+        newScale = mTransform.maxScale;
+    }
+
+    // 如果缩放值没有变化，直接返回
+    if (newScale == mTransform.scale) {
+        return;
+    }
+
+    // 计算缩放中心在OpenGL坐标系中的位置
+    // 将屏幕坐标转换为OpenGL标准化设备坐标
+    float glFocusX = (focusX / mViewportWidth) * 2.0f - 1.0f;
+    float glFocusY = 1.0f - (focusY / mViewportHeight) * 2.0f;
+
+    // 调整平移以使缩放围绕焦点进行
+    // 缩放前后的坐标关系：newPos = focus + (oldPos - focus) * (newScale/oldScale)
+    float scaleRatio = newScale / mTransform.scale;
+    mTransform.translateX = glFocusX + (mTransform.translateX - glFocusX) * scaleRatio;
+    mTransform.translateY = glFocusY + (mTransform.translateY - glFocusY) * scaleRatio;
+
+    // 更新缩放值
+    mTransform.scale = newScale;
+
+    // 输出变换状态日志
+    LOGI("Transform updated: scale=%.2f, translate=(%.2f, %.2f)",
+         mTransform.scale, mTransform.translateX, mTransform.translateY);
+
+    // 更新顶点数据
+    updateVerticesWithTransform();
+}
+
+// 处理拖动手势的函数
+void TextureStitcher::handleDrag(float dx, float dy) {
+    // 将像素移动量转换为OpenGL坐标系中的移动量
+    // OpenGL坐标系范围是[-1,1]，所以需要根据视口大小进行转换
+    float glDx = (dx / mViewportWidth) * 2.0f;
+    float glDy = -(dy / mViewportHeight) * 2.0f; // Y轴方向相反
+
+    // 应用平移
+    mTransform.translateX += glDx;
+    mTransform.translateY += glDy;
+
+    // 输出拖动信息日志
+    LOGI("handleDrag: dx=%.1f, dy=%.1f, glDx=%.3f, glDy=%.3f, newTranslate=(%.2f, %.2f)",
+         dx, dy, glDx, glDy, mTransform.translateX, mTransform.translateY);
+
+    // 更新顶点数据
+    updateVerticesWithTransform();
+}
+
+// 重置变换到初始状态的函数
+void TextureStitcher::resetTransform() {
+    // 输出重置日志
+    LOGI("resetTransform called");
+
+    // 重置所有变换参数
+    mTransform.scale = 1.0f;
+    mTransform.translateX = 0.0f;
+    mTransform.translateY = 0.0f;
+
+    // 更新顶点数据
+    updateVerticesWithTransform();
+
+    // 输出重置完成日志
+    LOGI("Transform reset to identity");
+}
+
 // 计算图片布局的函数，确保图片间无重叠
 void TextureStitcher::calculateLayout() {
     // 输出布局计算开始日志，包含当前纹理数量
@@ -197,9 +321,8 @@ void TextureStitcher::calculateLayout() {
     // 计算每行的高度
     float rowHeight = 2.0f / rows;
 
-    // 清空之前的顶点数据
+    // 清空原始顶点数据
     mVertices.clear();
-    // 清空之前的索引数据
     mIndices.clear();
 
     // 遍历所有纹理，计算每个纹理的位置
@@ -222,14 +345,14 @@ void TextureStitcher::calculateLayout() {
 
         // 创建4个顶点，定义矩形的位置和纹理坐标
         Vertex vertices[4] = {
-            // 左下角顶点：位置坐标和纹理坐标（修复了纹理颠倒问题）
-            { {x, y - height, 0.0f}, {0.0f, 1.0f} },
-            // 右下角顶点：位置坐标和纹理坐标
-            { {x + width, y - height, 0.0f}, {1.0f, 1.0f} },
-            // 右上角顶点：位置坐标和纹理坐标
-            { {x + width, y, 0.0f}, {1.0f, 0.0f} },
-            // 左上角顶点：位置坐标和纹理坐标
-            { {x, y, 0.0f}, {0.0f, 0.0f} }
+                // 左下角顶点：位置坐标和纹理坐标（修复了纹理颠倒问题）
+                { {x, y - height, 0.0f}, {0.0f, 1.0f} },
+                // 右下角顶点：位置坐标和纹理坐标
+                { {x + width, y - height, 0.0f}, {1.0f, 1.0f} },
+                // 右上角顶点：位置坐标和纹理坐标
+                { {x + width, y, 0.0f}, {1.0f, 0.0f} },
+                // 左上角顶点：位置坐标和纹理坐标
+                { {x, y, 0.0f}, {0.0f, 0.0f} }
         };
 
         // 将4个顶点添加到顶点数组中
@@ -241,12 +364,15 @@ void TextureStitcher::calculateLayout() {
         GLuint baseIndex = i * 4;
         // 添加三角形索引，用两个三角形组成一个矩形
         mIndices.insert(mIndices.end(), {
-            // 第一个三角形：左下->右下->右上
-            baseIndex, baseIndex + 1, baseIndex + 2,
-            // 第二个三角形：左下->右上->左上
-            baseIndex, baseIndex + 2, baseIndex + 3
+                // 第一个三角形：左下->右下->右上
+                baseIndex, baseIndex + 1, baseIndex + 2,
+                // 第二个三角形：左下->右上->左上
+                baseIndex, baseIndex + 2, baseIndex + 3
         });
     }
+
+    // 计算布局后立即应用当前变换
+    updateVerticesWithTransform();
 
     // 输出布局计算完成日志，包含顶点和索引数量
     LOGI("Layout calculated: %zu vertices, %zu indices", mVertices.size(), mIndices.size());
@@ -258,7 +384,7 @@ void TextureStitcher::createVertexData() {
     LOGI("createVertexData called");
 
     // 检查顶点数据是否为空
-    if (mVertices.empty() || mIndices.empty()) {
+    if (mTransformedVertices.empty() || mIndices.empty()) {
         // 输出无顶点数据错误日志
         LOGE("No vertex data to create");
         return;
@@ -269,10 +395,10 @@ void TextureStitcher::createVertexData() {
 
     // 绑定顶点缓冲对象
     glBindBuffer(GL_ARRAY_BUFFER, mVBO);
-    // 上传顶点数据到GPU
+    // 上传顶点数据到GPU（使用变换后的顶点数据）
     glBufferData(GL_ARRAY_BUFFER,
-                 mVertices.size() * sizeof(Vertex),
-                 mVertices.data(), GL_STATIC_DRAW);
+                 mTransformedVertices.size() * sizeof(Vertex),
+                 mTransformedVertices.data(), GL_DYNAMIC_DRAW); // 改为DYNAMIC_DRAW因为数据会频繁更新
 
     // 绑定元素缓冲对象
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mEBO);
@@ -288,7 +414,7 @@ void TextureStitcher::createVertexData() {
 
     // 设置纹理坐标属性指针
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
-                         (void*)offsetof(Vertex, texCoord));
+                          (void*)offsetof(Vertex, texCoord));
     // 启用纹理坐标属性
     glEnableVertexAttribArray(1);
 
@@ -298,7 +424,7 @@ void TextureStitcher::createVertexData() {
     checkGLError("createVertexData");
 
     // 输出顶点数据创建成功日志
-    LOGI("Vertex data created successfully");
+    LOGI("Vertex data created successfully with transform");
 }
 
 // 渲染函数，绘制所有纹理
@@ -355,7 +481,7 @@ void TextureStitcher::render() {
         glBindVertexArray(mVAO);
         // 绘制元素（两个三角形组成的矩形）
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT,
-                      (void*)(i * 6 * sizeof(GLuint)));
+                       (void*)(i * 6 * sizeof(GLuint)));
 
         // 检查渲染过程中的OpenGL错误
         checkGLError("render texture");
@@ -365,6 +491,32 @@ void TextureStitcher::render() {
     glBindVertexArray(0);
     // 输出渲染完成日志
     LOGI("Render completed");
+}
+
+// 清空纹理的方法
+void TextureStitcher::clearTextures() {
+    // 输出清空纹理开始日志
+    LOGI("clearTextures called, texture count: %zu", mTextures.size());
+
+    // 删除所有纹理对象
+    for (auto& tex : mTextures) {
+        if (tex.textureId) {
+            // 删除纹理对象
+            glDeleteTextures(1, &tex.textureId);
+            // 输出删除纹理日志
+            LOGI("Deleted texture: %d", tex.textureId);
+        }
+    }
+    // 清空纹理数组
+    mTextures.clear();
+    // 清空顶点数据
+    mVertices.clear();
+    // 清空变换后的顶点数据
+    mTransformedVertices.clear();
+    // 清空索引数据
+    mIndices.clear();
+    // 输出清空完成日志
+    LOGI("All textures cleared");
 }
 
 // 清理资源的函数
@@ -524,7 +676,7 @@ extern "C" {
 // Surface创建时的JNI函数实现
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeSurfaceCreated(JNIEnv *env, jobject thiz,
-                                                              jobject asset_manager) {
+                                                               jobject asset_manager) {
     // 输出函数调用日志
     LOGI("nativeSurfaceCreated called");
     // 创建纹理拼接器实例（如果不存在）
@@ -557,7 +709,7 @@ Java_com_example_imagestitch_MyGLRenderer_nativeSurfaceCreated(JNIEnv *env, jobj
 // Surface大小改变时的JNI函数实现
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeSurfaceChanged(JNIEnv *env, jobject thiz,
-                                                              jint width, jint height) {
+                                                               jint width, jint height) {
     // 输出函数调用日志，包含新的视口尺寸
     LOGI("nativeSurfaceChanged: %dx%d", width, height);
     // 设置视口大小
@@ -578,7 +730,7 @@ Java_com_example_imagestitch_MyGLRenderer_nativeDrawFrame(JNIEnv *env, jobject t
 // 设置图片的JNI函数实现
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeSetImages(JNIEnv *env, jobject thiz,
-                                                         jobjectArray bitmaps, jint count) {
+                                                          jobjectArray bitmaps, jint count) {
     // 输出函数调用日志，包含图片数量
     LOGI("nativeSetImages called with %d images", count);
 
@@ -664,31 +816,7 @@ Java_com_example_imagestitch_MyGLRenderer_nativeSetImages(JNIEnv *env, jobject t
     LOGI("Image processing completed: %d/%d successful", successCount, count);
 }
 
-// 清空纹理的方法
-void TextureStitcher::clearTextures() {
-    // 输出清空纹理开始日志
-    LOGI("clearTextures called, texture count: %zu", mTextures.size());
-
-    // 删除所有纹理对象
-    for (auto& tex : mTextures) {
-        if (tex.textureId) {
-            // 删除纹理对象
-            glDeleteTextures(1, &tex.textureId);
-            // 输出删除纹理日志
-            LOGI("Deleted texture: %d", tex.textureId);
-        }
-    }
-    // 清空纹理数组
-    mTextures.clear();
-    // 清空顶点数据
-    mVertices.clear();
-    // 清空索引数据
-    mIndices.clear();
-    // 输出清空完成日志
-    LOGI("All textures cleared");
-}
-
-// 在JNI函数区域添加清理方法
+// 清理资源的JNI函数实现
 JNIEXPORT void JNICALL
 Java_com_example_imagestitch_MyGLRenderer_nativeCleanup(JNIEnv *env, jobject thiz) {
     // 输出清理函数调用日志
@@ -705,7 +833,52 @@ Java_com_example_imagestitch_MyGLRenderer_nativeCleanup(JNIEnv *env, jobject thi
     }
 }
 
-// JNI函数实现区域结束
-#ifdef __cplusplus
+// 处理缩放手势的JNI函数实现
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeHandleScale(JNIEnv *env, jobject thiz,
+                                                            jfloat scaleFactor, jfloat focusX, jfloat focusY) {
+    // 输出JNI缩放调用日志
+    LOGI("nativeHandleScale called: factor=%.2f, focus=(%.1f, %.1f)", scaleFactor, focusX, focusY);
+    // 检查gStitcher是否存在
+    if (gStitcher) {
+        // 调用缩放处理函数
+        gStitcher->handleScale(scaleFactor, focusX, focusY);
+    } else {
+        // 输出gStitcher不存在错误日志
+        LOGE("gStitcher is null in nativeHandleScale");
+    }
 }
-#endif
+
+// 处理拖动手势的JNI函数实现
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeHandleDrag(JNIEnv *env, jobject thiz,
+                                                           jfloat dx, jfloat dy) {
+    // 输出JNI拖动调用日志
+    LOGI("nativeHandleDrag called: dx=%.1f, dy=%.1f", dx, dy);
+    // 检查gStitcher是否存在
+    if (gStitcher) {
+        // 调用拖动处理函数
+        gStitcher->handleDrag(dx, dy);
+    } else {
+        // 输出gStitcher不存在错误日志
+        LOGE("gStitcher is null in nativeHandleDrag");
+    }
+}
+
+// 重置变换的JNI函数实现
+JNIEXPORT void JNICALL
+Java_com_example_imagestitch_MyGLRenderer_nativeResetTransform(JNIEnv *env, jobject thiz) {
+    // 输出JNI重置变换调用日志
+    LOGI("nativeResetTransform called");
+    // 检查gStitcher是否存在
+    if (gStitcher) {
+        // 调用重置变换函数
+        gStitcher->resetTransform();
+    } else {
+        // 输出gStitcher不存在错误日志
+        LOGE("gStitcher is null in nativeResetTransform");
+    }
+}
+
+}
+// JNI函数实现
